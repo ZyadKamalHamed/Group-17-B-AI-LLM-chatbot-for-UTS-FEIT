@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 from langchain_community.document_loaders import WebBaseLoader, PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document #Had to change this line from before
@@ -6,15 +5,6 @@ import os
 from typing import List, Union
 
 
-=======
-from langchain_community.document_loaders import WebBaseLoader
-from langchain.document_loaders import PyPDFLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.schema import Document
-import os
-from typing import List, Union
-
->>>>>>> 7705d002e7617086e0feae457009db121027740a
 class DocumentLoader:
     """
     Handles loading and chunking of documents from URLs and PDFs.
@@ -76,7 +66,3 @@ class DocumentLoader:
                     all_docs.extend(docs)
 
         return all_docs
-<<<<<<< HEAD
-
-=======
->>>>>>> 7705d002e7617086e0feae457009db121027740a
