@@ -1,9 +1,9 @@
-from langchain_community.document_loaders import WebBaseLoader
-from langchain.document_loaders import PyPDFLoader
+from langchain_community.document_loaders import WebBaseLoader, PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.schema import Document
+from langchain_core.documents import Document #Had to change this line from before
 import os
 from typing import List, Union
+
 
 class DocumentLoader:
     """
