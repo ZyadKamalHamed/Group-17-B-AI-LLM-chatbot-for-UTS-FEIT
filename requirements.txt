@@ -12,3 +12,5 @@ pyngrok
 gradio
 duckduckgo-search
 beautifulsoup4
+fastapi
+uvicorn
