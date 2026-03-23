@@ -1,0 +1,1 @@
+!function(){"use strict";document.querySelectorAll('[data-type="listingGridWithBackgroundCol2"]').forEach((function(t){t.querySelectorAll(".newsCard").forEach((function(t,e){0===e&&t.classList.add("image__mask--11"),3===e&&t.classList.add("image__mask--10");var a=t.querySelector("a:has(.newsCard__title)");null==a||a.setAttribute("tabindex","-1")}))}))}();
