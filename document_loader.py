@@ -65,4 +65,4 @@ class DocumentLoader:
                         d.metadata.update(src.get("metadata", {}))
                     all_docs.extend(docs)
 
-        return all_docs
+        return all_docs 
