@@ -53,3 +53,4 @@ from langchain.embeddings import HuggingFaceEmbeddings
 from langchain.vectorstores import FAISS, Chroma
 from langchain.agents import AgentType, initialize_agent, Tool
 from langchain_community.tools import DuckDuckGoSearchRun
+from langchain_community.embeddings import OllamaEmbeddings

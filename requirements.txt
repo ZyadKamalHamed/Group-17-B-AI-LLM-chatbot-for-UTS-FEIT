@@ -1,16 +1,32 @@
+# Core LangChain packages
 langchain
 langchain-community
 langchain-core
+
+# Vector store
 chromadb
+
+# Embeddings
 sentence-transformers
-faiss-cpu
+
+# Document loaders
 pypdf
 python-docx
+beautifulsoup4
 requests
+
+# Utilities
 psutil
 pyngrok
-gradio
 duckduckgo-search
-beautifulsoup4
+
+# Backend
 fastapi
 uvicorn
+
+# Frontend
+streamlit
+
+# Optional UI tools
+gradio
+
