@@ -1,7 +1,8 @@
 # Core LangChain packages
 langchain
-langchain-community
 langchain-core
+langchain-community
+langchain-ollama
 
 # Vector store
 chromadb
@@ -9,16 +10,18 @@ chromadb
 # Embeddings
 sentence-transformers
 
-# Document loaders
+# Document loaders & scraping
 pypdf
 python-docx
 beautifulsoup4
 requests
 
+# Search
+duckduckgo-search
+
 # Utilities
 psutil
 pyngrok
-duckduckgo-search
 
 # Backend
 fastapi
@@ -26,7 +29,3 @@ uvicorn
 
 # Frontend
 streamlit
-
-# Optional UI tools
-gradio
-
