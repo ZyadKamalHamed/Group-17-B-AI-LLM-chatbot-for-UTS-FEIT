@@ -47,8 +47,10 @@ from langchain.memory import ConversationBufferWindowMemory, ConversationSummary
 from langchain.chains import ConversationChain, RetrievalQA
 from langchain.prompts import PromptTemplate, ChatPromptTemplate
 from langchain.document_loaders import PyPDFLoader, TextLoader
+from langchain.document_loaders import WebBaseLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.embeddings import HuggingFaceEmbeddings
 from langchain.vectorstores import FAISS, Chroma
 from langchain.agents import AgentType, initialize_agent, Tool
-from langchain.tools import DuckDuckGoSearchRun
+from langchain_community.tools import DuckDuckGoSearchRun
+from langchain_community.embeddings import OllamaEmbeddings

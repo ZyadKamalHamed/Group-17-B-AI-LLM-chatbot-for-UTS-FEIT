@@ -1,0 +1,31 @@
+# Core LangChain packages
+langchain
+langchain-core
+langchain-community
+langchain-ollama
+
+# Vector store
+chromadb
+
+# Embeddings
+sentence-transformers
+
+# Document loaders & scraping
+pypdf
+python-docx
+beautifulsoup4
+requests
+
+# Search
+duckduckgo-search
+
+# Utilities
+psutil
+pyngrok
+
+# Backend
+fastapi
+uvicorn
+
+# Frontend
+streamlit
