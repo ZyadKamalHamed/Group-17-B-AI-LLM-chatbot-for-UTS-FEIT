@@ -71,6 +71,10 @@ class WebRAGPipeline:
 
     # Course and subject info
     "https://www.uts.edu.au/for-students/current-students/managing-your-course/your-enrolment/course-and-subject-information",
+
+    # Food, drink and retail at UTS
+    "https://www.uts.edu.au/about/locations-facilities/campus/food-drink-retail",
+    "https://www.yelp.com/search?cflt=cafes&find_near=uts-sydney-3"
     ]
 
 
@@ -79,11 +83,37 @@ class WebRAGPipeline:
         "handbook.uts.edu.au",
     ]
 
+    OUT_OF_SCOPE = [
+        "usyd",
+        "university of sydney",
+        "unsw",
+        "university of new south wales",
+        "macquarie university",
+        "anu",
+        "australian national university",
+        "monash university",
+        "other university",
+        "other organisation",
+        "non-uts organisation",
+    ]
+
     def __init__(self, model_name="llama3:latest", max_results=5, max_chars=5000):
         self.search = DuckDuckGoSearchRun()
         self.llm = OllamaLLM(model=model_name)
         self.max_results = max_results
         self.max_chars = max_chars
+
+    # ---------------------------------------------------------
+    # SCOPE CHECK
+    # ---------------------------------------------------------
+    def is_in_scope(self, question: str):
+        q = question.lower().strip()
+
+        for term in self.OUT_OF_SCOPE:
+            if term in q:
+                return False, "Sorry, this chatbot only supports UTS ands FEIT-related questions."
+
+        return True, ""
 
     # ---------------------------------------------------------
     # 1. SEARCH
@@ -167,6 +197,10 @@ All information in the context comes from trusted UTS sources such as:
 You must NOT use outside knowledge. If the answer is not present in the context, respond with:
 "I could not find this information in the UTS sources."
 
+When a user greets you with no question, respond with a friendly greeting and an invitation to ask about UTS FEIT with a couple suggestions on what to ask
+
+your writing style is clear, concise, and student-friendly. Always cite the source URLs in your answer.
+
 ---------------- CONTEXT START ----------------
 {context}
 ---------------- CONTEXT END ------------------
@@ -182,6 +216,13 @@ Provide a clear, student-friendly answer with citations to the UTS URLs.
     # ---------------------------------------------------------
     def run(self, question: str):
         """Full UTS‑restricted Web‑RAG pipeline."""
+        in_scope, message = self.is_in_scope(question)
+        if not in_scope:
+            return {
+                "answer": message,
+                "sources": []
+            }
+
         urls = self.search_web(question)
         pages = {url: self.fetch_page(url) for url in urls}
         context = self.build_context(pages)
