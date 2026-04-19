@@ -1,7 +1,10 @@
+import os
 import requests
 from bs4 import BeautifulSoup
 from langchain_community.tools import DuckDuckGoSearchRun
 from langchain_ollama import OllamaLLM
+from document_loader import DocumentLoader
+from vector_store import VectorStore
 
 
 class WebRAGPipeline:
@@ -97,11 +100,59 @@ class WebRAGPipeline:
         "non-uts organisation",
     ]
 
-    def __init__(self, model_name="llama3:latest", max_results=5, max_chars=5000):
+    DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
+
+    def __init__(self, model_name="llama3:latest", max_results=5, max_chars=5000, rebuild_store=False):
         self.search = DuckDuckGoSearchRun()
         self.llm = OllamaLLM(model=model_name)
         self.max_results = max_results
         self.max_chars = max_chars
+        self.vector_store = self._init_vector_store(rebuild=rebuild_store)
+
+    # ---------------------------------------------------------
+    # 0. LOCAL PDF VECTOR STORE
+    # ---------------------------------------------------------
+    def _init_vector_store(self, rebuild=False):
+        """Load PDFs from data/ into ChromaDB (build once, then reuse)."""
+        vs = VectorStore()
+
+        # If the store already exists on disk and no rebuild requested, just load it
+        if not rebuild and os.path.exists(vs.persist_dir) and os.listdir(vs.persist_dir):
+            vs.load()
+            return vs
+
+        # Clear old store if rebuilding
+        if rebuild and os.path.exists(vs.persist_dir):
+            import shutil
+            shutil.rmtree(vs.persist_dir)
+
+        # Otherwise, build from all PDFs in data/
+        pdf_files = [
+            os.path.join(self.DATA_DIR, f)
+            for f in os.listdir(self.DATA_DIR)
+            if f.endswith(".pdf")
+        ]
+        if not pdf_files:
+            return None
+
+        loader = DocumentLoader()
+        docs = loader.load_multiple(pdf_files)
+        vs.build(docs)
+        return vs
+
+    def search_local_docs(self, query: str):
+        """Search the local vector store for relevant PDF chunks."""
+        if self.vector_store is None:
+            return ""
+        retriever = self.vector_store.as_retriever(k=3)
+        results = retriever.invoke(query)
+        if not results:
+            return ""
+        parts = []
+        for doc in results:
+            source = doc.metadata.get("source", "Community Recommendations PDF")
+            parts.append(f"Source: {source}\n{doc.page_content}")
+        return "\n\n---\n\n".join(parts)
 
     # ---------------------------------------------------------
     # SCOPE CHECK
@@ -184,18 +235,33 @@ class WebRAGPipeline:
     # ---------------------------------------------------------
     def generate_answer(self, question: str, context: str):
         """Ask the LLM to answer using ONLY UTS sources."""
-        prompt = f"""
-You are an academic assistant for students in the UTS Faculty of Engineering and Information Technology (FEIT).
-Your role is to provide accurate, grounded answers using ONLY the information found in the context block.
+        prompt = f"""You are a friendly, helpful assistant for students at UTS Faculty of Engineering and IT (FEIT). Think of yourself as a knowledgeable peer mentor.
 
-All information in the context comes from trusted UTS sources such as:
-- UTS FEIT website
-- UTS Handbook
-- UTS Study pages
-- UTS Current Students pages
+PERSONALITY & TONE:
+- Warm, approachable, and concise — like a helpful senior student
+- Use casual but professional language
+- Keep responses short and scannable — no walls of text
 
-You must NOT use outside knowledge. If the answer is not present in the context, respond with:
-"I could not find this information in the UTS sources."
+GREETING & CHITCHAT HANDLING:
+- If the student says hello, hi, hey, thanks, or makes casual conversation, respond naturally and warmly. Do NOT search for sources or say you couldn't find information.
+- Example: "Hey! 👋 How can I help you today?" or "No worries, happy to help!"
+- If they ask who you are, say you're the UTS FEIT Chatbot — here to help with anything about uni life, courses, and campus.
+
+ANSWERING QUESTIONS:
+- ONLY use information from the context block below. Do NOT make up information.
+- If the answer isn't in the context, say: "I couldn't find that in my sources — try checking [Ask UTS](https://www.uts.edu.au/for-students/current-students/managing-your-course/ask-uts) or contacting FEIT directly."
+- Answer ONLY what was asked. Don't over-explain or add unrelated info.
+
+FORMATTING RULES:
+- Use bullet points or numbered steps — never long paragraphs
+- Bold key terms or actions the student needs to take
+- Keep answers to 3-5 bullet points max where possible
+- Use headings only if answering multiple parts
+
+CITATIONS:
+- Add numbered references at the end like [1], [2], etc.
+- Link each reference to the source URL or name
+- Reference them inline in your answer, e.g. "You can enrol via My Student Portal [1]"
 
 When a user greets you with no question, respond with a friendly greeting and an invitation to ask about UTS FEIT with a couple suggestions on what to ask
 
@@ -205,30 +271,81 @@ your writing style is clear, concise, and student-friendly. Always cite the sour
 {context}
 ---------------- CONTEXT END ------------------
 
-Question: {question}
-
-Provide a clear, student-friendly answer with citations to the UTS URLs.
+Student's question: {question}
 """
         return self.llm.invoke(prompt)
 
     # ---------------------------------------------------------
-    # 5. FULL PIPELINE
+    # 5. GREETING / CHITCHAT DETECTION
+    # ---------------------------------------------------------
+    GREETING_WORDS = {"hi", "hey", "hello", "yo", "sup", "hiya", "g'day", "howdy"}
+    THANKS_WORDS = {"thanks", "thank you", "cheers", "ta", "thx", "tysm", "appreciate it"}
+    CHITCHAT_WORDS = {"how are you", "what's up", "whats up", "who are you", "what can you do"}
+
+    def _is_chitchat(self, question: str):
+        """Check if the message is a greeting or chitchat, not a real question."""
+        q = question.lower().strip().rstrip("?!.,")
+        if q in self.GREETING_WORDS or q in self.THANKS_WORDS:
+            return True
+        if any(phrase in q for phrase in self.CHITCHAT_WORDS):
+            return True
+        # Very short messages with no real question words
+        if len(q.split()) <= 2 and q in self.GREETING_WORDS | self.THANKS_WORDS:
+            return True
+        return False
+
+    def _chitchat_response(self, question: str):
+        """Return a friendly response for greetings and chitchat."""
+        q = question.lower().strip().rstrip("?!.,")
+        if q in self.THANKS_WORDS:
+            return {"answer": "No worries, happy to help! Let me know if you have any other questions 😊", "sources": []}
+        if any(phrase in q for phrase in {"who are you", "what can you do"}):
+            return {
+                "answer": "I'm the **UTS FEIT Chatbot** — I can help you with:\n"
+                          "- Course info, enrolment & timetables\n"
+                          "- Uni policies & important dates\n"
+                          "- Campus life tips (cafes, hangout spots, etc.)\n\n"
+                          "Just ask away!",
+                "sources": []
+            }
+        return {"answer": "Hey! 👋 I'm the UTS FEIT Chatbot. What can I help you with today?", "sources": []}
+
+    # ---------------------------------------------------------
+    # 6. FULL PIPELINE
     # ---------------------------------------------------------
     def run(self, question: str):
         """Full UTS‑restricted Web‑RAG pipeline."""
         in_scope, message = self.is_in_scope(question)
         if not in_scope:
-            return {
-                "answer": message,
-                "sources": []
-            }
+            return {"answer": message, "sources": []}
 
+        # Handle greetings and chitchat without searching
+        if self._is_chitchat(question):
+            return self._chitchat_response(question)
+
+        # Web sources
         urls = self.search_web(question)
         pages = {url: self.fetch_page(url) for url in urls}
-        context = self.build_context(pages)
+        web_context = self.build_context(pages)
+
+        # Local PDF sources
+        local_context = self.search_local_docs(question)
+
+        # Combine both contexts
+        context_parts = []
+        if local_context:
+            context_parts.append("=== Community Recommendations ===\n" + local_context)
+        if web_context:
+            context_parts.append("=== UTS Web Sources ===\n" + web_context)
+        context = "\n\n".join(context_parts)
+
         answer = self.generate_answer(question, context)
+
+        sources = list(urls)
+        if local_context:
+            sources.append("Community Recommendations PDF")
 
         return {
             "answer": answer,
-            "sources": urls
+            "sources": sources
         }

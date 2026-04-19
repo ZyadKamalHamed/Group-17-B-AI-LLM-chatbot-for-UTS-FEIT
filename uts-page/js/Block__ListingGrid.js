@@ -1,1 +1,0 @@
-!function(){"use strict";document.querySelectorAll('[data-type="listingGrid"]').forEach((function(t){t.querySelectorAll(".newsCard").forEach((function(t){var e=t.querySelector("a:has(img)"),r=t.querySelector("a:has(.newsCard__title)");null==e||e.setAttribute("tabindex","-1"),null==r||r.setAttribute("tabindex","-1")}))}))}();
