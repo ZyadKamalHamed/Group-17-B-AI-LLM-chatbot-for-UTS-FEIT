@@ -125,7 +125,7 @@ if "messages" not in st.session_state:
 for message in st.session_state.messages:
     avatar = "📚" if message["role"] == "assistant" else "👤"
     with st.chat_message(message["role"], avatar=avatar):
-        st.markdown(message["content"])
+        st.markdown(message["content"], unsafe_allow_html=True)
 
 # Show example questions if chat is empty
 if not st.session_state.messages:
