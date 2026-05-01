@@ -258,10 +258,12 @@ FORMATTING RULES:
 - Keep answers to 3-5 bullet points max where possible
 - Use headings only if answering multiple parts
 
-CITATIONS:
-- Add numbered references at the end like [1], [2], etc.
-- Link each reference to the source URL or name
-- Reference them inline in your answer, e.g. "You can enrol via My Student Portal [1]"
+CITATIONS (STRICT RULES):
+- You MUST include numbered references like [1], [2], [3].
+- You MUST cite ONLY from the URLs in the context block.
+- You MUST output **no more than 3 references total**.
+- If more than 3 sources appear in the context, choose the 3 most relevant.
+- NEVER output more than 3 links under any circumstances.
 
 When a user greets you with no question, respond with a friendly greeting and an invitation to ask about UTS FEIT with a couple suggestions on what to ask
 
@@ -325,7 +327,12 @@ Student's question: {question}
 
         # Web sources
         urls = self.search_web(question)
-        pages = {url: self.fetch_page(url) for url in urls}
+
+        # LIMIT URLS BEFORE SCRAPING (prevents LLM crashes)
+        limited_urls = urls[:3]
+
+        # Scrape only the limited URLs
+        pages = {url: self.fetch_page(url) for url in limited_urls}
         web_context = self.build_context(pages)
 
         # Local PDF sources
@@ -339,9 +346,11 @@ Student's question: {question}
             context_parts.append("=== UTS Web Sources ===\n" + web_context)
         context = "\n\n".join(context_parts)
 
+        # Generate answer
         answer = self.generate_answer(question, context)
 
-        sources = list(urls)
+        # Sources list (also limited)
+        sources = limited_urls.copy()
         if local_context:
             sources.append("Community Recommendations PDF")
 
