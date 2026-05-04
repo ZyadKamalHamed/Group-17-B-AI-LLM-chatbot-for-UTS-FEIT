@@ -18,6 +18,7 @@ requests
 
 # Search
 duckduckgo-search
+ddgs
 
 # Utilities
 psutil

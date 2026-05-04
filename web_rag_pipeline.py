@@ -1,4 +1,5 @@
 import os
+import re
 import requests
 from bs4 import BeautifulSoup
 from langchain_community.tools import DuckDuckGoSearchRun
@@ -102,7 +103,7 @@ class WebRAGPipeline:
 
     DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 
-    def __init__(self, model_name="llama3:latest", max_results=5, max_chars=5000, rebuild_store=False):
+    def __init__(self, model_name="deepseek-r1:8b", max_results=5, max_chars=5000, rebuild_store=False):
         self.search = DuckDuckGoSearchRun()
         self.llm = OllamaLLM(model=model_name)
         self.max_results = max_results
@@ -169,31 +170,105 @@ class WebRAGPipeline:
     # ---------------------------------------------------------
     # 1. SEARCH
     # ---------------------------------------------------------
-    def search_web(self, query: str):
-        """Perform DuckDuckGo search, then filter to UTS-only URLs."""
-        raw = self.search.run(query)
-        urls = []
+    RANKING_STOPWORDS = {
+        "what",
+        "where",
+        "when",
+        "how",
+        "who",
+        "why",
+        "can",
+        "do",
+        "i",
+        "at",
+        "in",
+        "on",
+        "the",
+        "a",
+        "an",
+        "my",
+        "uts",
+        "feit",
+        "student",
+        "students",
+        "course",
+        "current",
+    }
 
-        # Extract URLs from DuckDuckGo text blob
-        for line in raw.split("\n"):
-            if "http" in line:
-                url = line[line.find("http") :].strip()
-                urls.append(url)
-            if len(urls) >= self.max_results:
-                break
+    @staticmethod
+    def _extract_urls(raw_search_output: str):
+        urls = []
+        for line in raw_search_output.splitlines():
+            match = re.search(r"https?://\S+", line)
+            if match:
+                urls.append(match.group(0).rstrip(").,]"))
+        return urls
+
+    @staticmethod
+    def _dedupe_keep_order(urls):
+        seen = set()
+        ordered = []
+        for url in urls:
+            if url not in seen:
+                seen.add(url)
+                ordered.append(url)
+        return ordered
+
+    @classmethod
+    def _query_terms(cls, query: str):
+        terms = []
+        for term in re.findall(r"[a-z0-9]+", query.lower()):
+            if len(term) >= 3 and term not in cls.RANKING_STOPWORDS:
+                terms.append(term)
+        return terms
+
+    @classmethod
+    def _url_relevance_score(cls, url: str, query_terms):
+        lowered = url.lower()
+        score = 0
+        for term in query_terms:
+            if term in lowered:
+                score += 3
+            elif len(term) >= 5 and term[:5] in lowered:
+                score += 2
+        return score
+
+    def _rerank_from_second_url(self, query: str, primary_urls, fallback_urls):
+        query_terms = self._query_terms(query)
+        combined = self._dedupe_keep_order(primary_urls + fallback_urls)
+
+        if len(combined) <= 1:
+            return combined
+
+        locked = combined[:1]
+        remaining = combined[1:]
+        scored_remaining = []
+        for index, url in enumerate(remaining):
+            score = self._url_relevance_score(url, query_terms)
+            scored_remaining.append((score, index, url))
+
+        scored_remaining.sort(key=lambda item: (-item[0], item[1]))
+        return locked + [url for _, _, url in scored_remaining]
+
+    def search_web(self, query: str):
+        """Perform DuckDuckGo search, then lightly rerank UTS URLs."""
+        raw = self.search.run(query)
+        urls = self._extract_urls(raw)
 
         # Filter to trusted UTS domains
-        filtered = []
-        for url in urls:
-            if any(domain in url for domain in self.TRUSTED_DOMAINS):
-                filtered.append(url)
+        filtered = [
+            url
+            for url in urls
+            if any(domain in url for domain in self.TRUSTED_DOMAINS)
+        ]
+        filtered = self._dedupe_keep_order(filtered)
 
-        # Add curated UTS links (ensures FEIT relevance)
-        for trusted in self.TRUSTED_UTS_URLS:
-            if trusted not in filtered:
-                filtered.append(trusted)
-
-        return filtered[: self.max_results]
+        # Add curated UTS links as fallback candidates, then rerank from slot 2 onward.
+        fallback_urls = [
+            url for url in self.TRUSTED_UTS_URLS if url not in set(filtered)
+        ]
+        ranked_urls = self._rerank_from_second_url(query, filtered, fallback_urls)
+        return ranked_urls[: self.max_results]
 
     # ---------------------------------------------------------
     # 2. SCRAPE
