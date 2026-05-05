@@ -127,8 +127,11 @@ for message in st.session_state.messages:
     with st.chat_message(message["role"], avatar=avatar):
         st.markdown(message["content"], unsafe_allow_html=True)
 
+# Render chat input
+typed_prompt = st.chat_input("e.g., How do I get special consideration?")
+
 # Show example questions if chat is empty
-if not st.session_state.messages:
+if not st.session_state.messages and "ask_example" not in st.session_state and not typed_prompt:
     st.markdown("### Example Questions")
     col1, col2 = st.columns(2)
 
@@ -148,12 +151,13 @@ if not st.session_state.messages:
 
     st.markdown("---")
 
-# Handle example question or user input
+# Example question takes priority on the rerun after button click
+prompt = None
 if "ask_example" in st.session_state:
     prompt = st.session_state.ask_example
     del st.session_state.ask_example
-else:
-    prompt = st.chat_input("e.g., How do I get special consideration?")
+elif typed_prompt:
+    prompt = typed_prompt
 
 if prompt:
     # Show user message
