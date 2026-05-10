@@ -338,18 +338,16 @@ IN-SCIOPE CHECK:
 - In scope = anything related to UTS or FEIT courses, enrolment, timetables, policies, campus life, important dates, even transport.
 - If the question seems to be about another topic outside of UTS or FEIT, politely decline and suggest the student ask a more relevant question.
 - Unless the messae is a greeting or chitchat, ALWAYS perform the in-scope check first before attempting to search or answer.
+- If a question is out of scope, do not include any reference links. 
 
-
-CITATIONS (STRICT RULES):
-- You MUST include numbered references like [1], [2], [3].
-- You MUST cite ONLY from the URLs in the context block.
-- You MUST output **no more than 3 references total**.
-- If more than 3 sources appear in the context, choose the 3 most relevant.
-- NEVER output more than 3 links under any circumstances.
+LINKS & CITATIONS (STRICT RULES):
+- Do NOT include any URLs, links, or numbered references like [1], [2] in your answer.
+- Do NOT add a "Sources" or "References" section — the application displays sources separately below your answer.
+- Just write a clean, helpful answer using information from the context block.
 
 When a user greets you with no question, respond with a friendly greeting and an invitation to ask about UTS FEIT with a couple suggestions on what to ask
 
-your writing style is clear, concise, and student-friendly. Always cite the source URLs in your answer.
+your writing style is clear, concise, and student-friendly.
 
 ---------------- CONTEXT START ----------------
 {context}
@@ -397,6 +395,21 @@ Student's question: {question}
     # ---------------------------------------------------------
     # 6. FULL PIPELINE
     # ---------------------------------------------------------
+    def _llm_scope_check(self, question: str) -> bool:
+        """Cheap LLM classifier — is this question about UTS / student life?"""
+        prompt = (
+            'Reply with exactly one word: "yes" or "no".\n'
+            "Is the following question about UTS (University of Technology Sydney), "
+            "FEIT, or general university student topics such as courses, enrolment, "
+            "timetables, policies, campus life, transport to campus, or important dates?\n\n"
+            f"Question: {question}\n\nAnswer:"
+        )
+        try:
+            result = self.llm.invoke(prompt).strip().lower()
+        except Exception:
+            return True  # fail open — let the main pipeline handle it
+        return result.startswith("y")
+
     def run(self, question: str):
         """Full UTS‑restricted Web‑RAG pipeline."""
         in_scope, message = self.is_in_scope(question)
@@ -406,6 +419,16 @@ Student's question: {question}
         # Handle greetings and chitchat without searching
         if self._is_chitchat(question):
             return self._chitchat_response(question)
+
+        # LLM-based scope check — skip search/scrape for off-topic questions
+        if not self._llm_scope_check(question):
+            return {
+                "answer": (
+                    "Sorry, this chatbot only supports UTS and FEIT-related questions. "
+                    "Please ask something about UTS courses, enrolment, timetables, policies, campus life, or important dates."
+                ),
+                "sources": [],
+            }
 
         # Web sources
         urls = self.search_web(question)
