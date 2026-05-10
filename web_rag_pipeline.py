@@ -103,7 +103,7 @@ class WebRAGPipeline:
 
     DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 
-    def __init__(self, model_name="llama3.1:latest", max_results=5, max_chars=5000, rebuild_store=False):
+    def __init__(self, model_name="llama3:8b", max_results=5, max_chars=5000, rebuild_store=False):
         self.search = DuckDuckGoSearchRun()
         self.llm = OllamaLLM(model=model_name)
         self.max_results = max_results
