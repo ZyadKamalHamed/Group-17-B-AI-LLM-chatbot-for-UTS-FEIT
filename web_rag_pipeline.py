@@ -103,7 +103,7 @@ class WebRAGPipeline:
 
     DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 
-    def __init__(self, model_name="deepseek-r1:8b", max_results=5, max_chars=5000, rebuild_store=False):
+    def __init__(self, model_name="llama3.1:latest", max_results=5, max_chars=5000, rebuild_store=False):
         self.search = DuckDuckGoSearchRun()
         self.llm = OllamaLLM(model=model_name)
         self.max_results = max_results
@@ -332,6 +332,13 @@ FORMATTING RULES:
 - Bold key terms or actions the student needs to take
 - Keep answers to 3-5 bullet points max where possible
 - Use headings only if answering multiple parts
+
+IN-SCIOPE CHECK: 
+- Only answer questions that are in scope
+- In scope = anything related to UTS or FEIT courses, enrolment, timetables, policies, campus life, important dates, even transport.
+- If the question seems to be about another topic outside of UTS or FEIT, politely decline and suggest the student ask a more relevant question.
+- Unless the messae is a greeting or chitchat, ALWAYS perform the in-scope check first before attempting to search or answer.
+
 
 CITATIONS (STRICT RULES):
 - You MUST include numbered references like [1], [2], [3].

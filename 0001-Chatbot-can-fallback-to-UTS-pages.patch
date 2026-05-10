@@ -1,0 +1,2085 @@
+From 6fe11b6df2eec7d2b5d903cac4e9b5b42e6d7ce0 Mon Sep 17 00:00:00 2001
+From: Calvin Kishore <calvin.k.kishore@gmail.com>
+Date: Mon, 4 May 2026 23:14:00 +1000
+Subject: [PATCH] Chatbot can fallback to UTS pages and answer further
+ questions
+
+---
+ app.py              |  250 +++++--
+ web_rag_pipeline.py | 1598 +++++++++++++++++++++++++++++++++++--------
+ 2 files changed, 1526 insertions(+), 322 deletions(-)
+
+diff --git a/app.py b/app.py
+index b3e8416..45caf81 100644
+--- a/app.py
++++ b/app.py
+@@ -1,5 +1,9 @@
+ import streamlit as st
+ import requests
++import html
++
++BACKEND_URL = "http://127.0.0.1:8000/chat"
++
+ 
+ st.set_page_config(
+     page_title="UTS FEIT Chatbot",
+@@ -8,11 +12,13 @@ st.set_page_config(
+     page_icon="UTS_Assets/images.png"
+ )
+ 
++
+ st.markdown("""
+ <style>
+     [data-testid="stAppViewContainer"] {
+         background: linear-gradient(135deg, #f5f7fa 0%, #ffffff 100%);
+     }
++
+     .uts-header {
+         display: flex;
+         align-items: center;
+@@ -20,10 +26,12 @@ st.markdown("""
+         margin-bottom: 2rem;
+         justify-content: space-between;
+     }
++
+     .uts-header img {
+         height: 70px;
+         width: auto;
+     }
++
+     .uts-title {
+         color: #0052CC;
+         font-weight: 700;
+@@ -31,6 +39,7 @@ st.markdown("""
+         margin: 0;
+         padding: 0;
+     }
++
+     .stButton>button {
+         background-color: #0052CC;
+         color: white;
+@@ -38,20 +47,23 @@ st.markdown("""
+         font-weight: 600;
+         padding: 0.5rem 1.5rem;
+     }
++
+     .stButton>button:hover {
+         background-color: #003d99;
+     }
+-    /* Style chat message avatars */
++
+     [data-testid="chatAvatarIcon-user"] {
+         background-color: #0052CC !important;
+     }
++
+     [data-testid="chatAvatarIcon-assistant"] {
+         background-color: #0052CC !important;
+     }
++
+     .stChatMessage [data-testid="chatAvatarIcon"] svg {
+         filter: invert(1);
+     }
+-    /* Source card styling */
++
+     .source-card {
+         background: linear-gradient(135deg, #E8F0FF 0%, #F0F5FF 100%);
+         border-left: 4px solid #0052CC;
+@@ -63,24 +75,29 @@ st.markdown("""
+         gap: 0.75rem;
+         word-break: break-word;
+     }
++
+     .source-icon {
+         font-size: 1.2rem;
+         flex-shrink: 0;
+     }
++
+     .source-link {
+         color: #0052CC;
+         text-decoration: none;
+         font-weight: 500;
+         word-break: break-all;
+     }
++
+     .source-link:hover {
+         text-decoration: underline;
+     }
++
+     .example-questions {
+         display: grid;
+         gap: 0.75rem;
+         margin-top: 2rem;
+     }
++
+     .example-btn {
+         background: linear-gradient(135deg, #E8F0FF 0%, #F0F5FF 100%);
+         border: 1px solid #0052CC;
+@@ -92,23 +109,135 @@ st.markdown("""
+         font-weight: 500;
+         transition: all 0.2s;
+     }
++
+     .example-btn:hover {
+         background: linear-gradient(135deg, #0052CC 0%, #003d99 100%);
+         color: white;
+         border-color: #003d99;
+     }
+-    @keyframes swing {
+-        0%, 100% { transform: rotate(-20deg); transform-origin: top center; }
+-        50% { transform: rotate(20deg); transform-origin: top center; }
+-    }
+ </style>
+ """, unsafe_allow_html=True)
+ 
++
++# -------------------------------------------------------------------
++# Helper functions
++# -------------------------------------------------------------------
++
++def init_state():
++    if "messages" not in st.session_state:
++        st.session_state.messages = []
++
++    if "pending_prompt" not in st.session_state:
++        st.session_state.pending_prompt = None
++
++    if "is_processing" not in st.session_state:
++        st.session_state.is_processing = False
++
++
++def format_sources(sources):
++    if not sources:
++        return ""
++
++    source_html = "\n\n**Sources:**"
++
++    seen = set()
++    for url in sources:
++        if not url or url in seen:
++            continue
++
++        seen.add(url)
++
++        safe_url = html.escape(str(url), quote=True)
++
++        source_html += (
++            f'\n<div class="source-card">'
++            f'<span class="source-icon">📎</span>'
++            f'<a href="{safe_url}" target="_blank" class="source-link">{safe_url}</a>'
++            f'</div>'
++        )
++
++    return source_html
++
++
++def call_backend(question):
++    response = requests.post(
++        BACKEND_URL,
++        json={"question": question},
++        timeout=90
++    )
++
++    response.raise_for_status()
++
++    data = response.json()
++
++    answer = data.get("answer", "No answer returned.")
++    sources = data.get("sources", [])
++
++    formatted_answer = answer + format_sources(sources)
++
++    return formatted_answer
++
++
++def add_user_message(prompt):
++    st.session_state.messages.append(
++        {
++            "role": "user",
++            "content": prompt,
++        }
++    )
++
++
++def add_assistant_message(content):
++    st.session_state.messages.append(
++        {
++            "role": "assistant",
++            "content": content,
++        }
++    )
++
++
++def render_messages():
++    for message in st.session_state.messages:
++        avatar = "📚" if message["role"] == "assistant" else "👤"
++
++        with st.chat_message(message["role"], avatar=avatar):
++            st.markdown(message["content"], unsafe_allow_html=True)
++
++
++def handle_new_prompt(prompt):
++    if not prompt:
++        return
++
++    if st.session_state.is_processing:
++        return
++
++    add_user_message(prompt)
++    st.session_state.pending_prompt = prompt
++    st.rerun()
++
++
++# -------------------------------------------------------------------
++# Initialise state
++# -------------------------------------------------------------------
++
++init_state()
++
++
++# -------------------------------------------------------------------
++# Header
++# -------------------------------------------------------------------
++
+ col_logo, col_title, col_restart = st.columns([0.12, 0.7, 0.18])
++
+ with col_logo:
+     st.image("UTS_Assets/images (1).png", width=70)
++
+ with col_title:
+-    st.markdown('<div class="uts-title">UTS FEIT Chatbot</div>', unsafe_allow_html=True)
++    st.markdown(
++        '<div class="uts-title">UTS FEIT Chatbot</div>',
++        unsafe_allow_html=True
++    )
++
+ with col_restart:
+     if st.button("↻ Restart", type="primary", use_container_width=True):
+         for key in list(st.session_state.keys()):
+@@ -117,75 +246,94 @@ with col_restart:
+ 
+ st.divider()
+ 
+-# Initialise chat history
+-if "messages" not in st.session_state:
+-    st.session_state.messages = []
+ 
+-# Display chat history
+-for message in st.session_state.messages:
+-    avatar = "📚" if message["role"] == "assistant" else "👤"
+-    with st.chat_message(message["role"], avatar=avatar):
+-        st.markdown(message["content"], unsafe_allow_html=True)
++# -------------------------------------------------------------------
++# Render existing chat history once
++# -------------------------------------------------------------------
++
++render_messages()
++
++
++# -------------------------------------------------------------------
++# Example questions, only when chat is empty and not processing
++# -------------------------------------------------------------------
+ 
+-# Show example questions if chat is empty
+-if not st.session_state.messages:
++if not st.session_state.messages and not st.session_state.pending_prompt:
+     st.markdown("### Example Questions")
++
+     col1, col2 = st.columns(2)
+ 
+     example_questions = [
+         "How do I enrol in subjects?",
+         "What's the census date?",
+         "How do I get special consideration?",
+-        "Where can I get food on campus?"
++        "Where can I get food on campus?",
+     ]
+ 
+     for i, q in enumerate(example_questions):
+         col = col1 if i % 2 == 0 else col2
++
+         with col:
+-            if st.button(q, key=f"example_{i}", use_container_width=True, help="Click to ask this question"):
+-                st.session_state.ask_example = q
+-                st.rerun()
++            if st.button(
++                q,
++                key=f"example_{i}",
++                use_container_width=True,
++                help="Click to ask this question"
++            ):
++                handle_new_prompt(q)
+ 
+     st.markdown("---")
+ 
+-# Handle example question or user input
+-if "ask_example" in st.session_state:
+-    prompt = st.session_state.ask_example
+-    del st.session_state.ask_example
+-else:
+-    prompt = st.chat_input("e.g., How do I get special consideration?")
+ 
+-if prompt:
+-    # Show user message
+-    st.chat_message("user", avatar="👤").markdown(prompt)
+-    st.session_state.messages.append({"role": "user", "content": prompt})
++# -------------------------------------------------------------------
++# Process pending prompt
++# -------------------------------------------------------------------
++
++if st.session_state.pending_prompt and not st.session_state.is_processing:
++    prompt_to_process = st.session_state.pending_prompt
++    st.session_state.is_processing = True
+ 
+-    # Display loading state with animated anchor
+     with st.chat_message("assistant", avatar="📚"):
+         with st.spinner("⚓ Diving into our UTS sources..."):
+             try:
+-                response = requests.post(
+-                    "http://127.0.0.1:8000/chat",
+-                    json={"question": prompt}
+-                ).json()
+-
+-                answer = response.get("answer", "No answer returned.")
+-                sources = response.get("sources", [])
+-
+-                # Build assistant message with styled sources
+-                formatted_answer = answer
+-                if sources:
+-                    formatted_answer += "\n\n**Sources:**"
+-                    for i, url in enumerate(sources, 1):
+-                        # Create a styled source card
+-                        formatted_answer += f'\n<div class="source-card"><span class="source-icon">📎</span><a href="{url}" target="_blank" class="source-link">{url}</a></div>'
++                formatted_answer = call_backend(prompt_to_process)
++
++            except requests.exceptions.Timeout:
++                formatted_answer = (
++                    "Sorry — the request took too long. "
++                    "Please try again with a shorter question."
++                )
++
++            except requests.exceptions.ConnectionError:
++                formatted_answer = (
++                    "Error contacting backend: could not connect to the FastAPI server. "
++                    "Make sure it is running on http://127.0.0.1:8000."
++                )
+ 
+             except Exception as e:
+                 formatted_answer = f"Error contacting backend: {e}"
+ 
+-        # Display assistant message
+         st.markdown(formatted_answer, unsafe_allow_html=True)
+ 
+-    st.session_state.messages.append(
+-        {"role": "assistant", "content": formatted_answer}
+-    )
++    add_assistant_message(formatted_answer)
++
++    st.session_state.pending_prompt = None
++    st.session_state.is_processing = False
++
++    st.rerun()
++
++
++# -------------------------------------------------------------------
++# Chat input
++# -------------------------------------------------------------------
++
++if not st.session_state.is_processing:
++    user_prompt = st.chat_input("e.g., How do I get special consideration?")
++
++    if user_prompt:
++        handle_new_prompt(user_prompt)
++else:
++    st.chat_input(
++        "Please wait for the current answer to finish...",
++        disabled=True
++    )
+\ No newline at end of file
+diff --git a/web_rag_pipeline.py b/web_rag_pipeline.py
+index c9e0b96..029d060 100644
+--- a/web_rag_pipeline.py
++++ b/web_rag_pipeline.py
+@@ -1,89 +1,40 @@
+ import os
++import logging
++import subprocess
+ import requests
+ from bs4 import BeautifulSoup
+-from langchain_community.tools import DuckDuckGoSearchRun
++from urllib.parse import urlparse, parse_qs, unquote
++from datetime import datetime
++
+ from langchain_ollama import OllamaLLM
+-from document_loader import DocumentLoader
+-from vector_store import VectorStore
++
++
++logger = logging.getLogger(__name__)
++logging.basicConfig(level=logging.INFO)
+ 
+ 
+ class WebRAGPipeline:
+     """
+-    UTS‑restricted Web‑RAG pipeline for FEIT students.
+-
+-    1. Use DuckDuckGo to find relevant pages
+-    2. Filter results to ONLY trusted UTS/FEIT URLs
+-    3. Scrape readable text from those pages
+-    4. Build a structured context block
+-    5. Ask the LLM to answer using ONLY UTS sources
++    UTS FEIT Web-RAG Pipeline
++
++    This version:
++    - Searches official UTS webpages
++    - Uses broader fallback UTS URLs for FEIT + general student life questions
++    - Scrapes official UTS pages only
++    - Ranks pages by relevance
++    - Answers only from official UTS webpage context
++    - Does NOT use Community PDFs or local vector stores
++    - Reduces context size to avoid Ollama 500 crashes
++    - Uses llama3:8b by default
+     """
+ 
+-    # ---------------------------------------------------------
+-    # TRUSTED UTS + FEIT SOURCES
+-    # ---------------------------------------------------------
+-    TRUSTED_UTS_URLS = [
+-    # FEIT course management
+-    "https://www.uts.edu.au/for-students/current-students/managing-your-course/current-students-information-engineering-and-information-technology",
+-    "https://www.uts.edu.au/for-students/current-students/managing-your-course/current-students-information-engineering-and-information-technology/academic-advice",
+-    "https://www.uts.edu.au/for-students/current-students/managing-your-course/current-students-information-engineering-and-information-technology/faculty-contacts",
+-    "https://www.uts.edu.au/for-students/current-students/managing-your-course/current-students-information-engineering-and-information-technology/feit-graduation-and-progression-rules",
+-
+-    # FAQs
+-    "https://www.uts.edu.au/for-students/current-students/support/contacts/frequently-asked-questions",
+-    "https://www.uts.edu.au/for-students/current-students/managing-your-course/current-students-information-engineering-and-information-technology/connect-workspace/workspace-faq",
+-    "https://www.uts.edu.au/for-students/current-students/managing-your-course/current-students-information-engineering-and-information-technology/uts-launch/common-questions-about-uts-launch",
+-
+-    # Ask UTS
+-    "https://www.uts.edu.au/for-students/current-students/managing-your-course/ask-uts",
+-
+-    # Policies
+-    "https://www.uts.edu.au/about/leadership-governance/policies/a-z/coursework-assessments-policy",
+-    "https://www.uts.edu.au/about/leadership-governance/policies/a-z/academic-integrity-policy",
+-
+-    # Rules
+-    "https://www.uts.edu.au/about/leadership-governance/governance/rules/student-rules",
+-    "https://www.uts.edu.au/globalassets/shared-media/documents/gsu/uts-rule-governance-changes-table.pdf",
+-
+-    # Handbook
+-    "https://coursehandbook.uts.edu.au/",
+-    "https://handbookpre2025.uts.edu.au/",
+-
+-    # International student guide
+-    "https://www.uts.edu.au/contentassets/f6f4d4c31a0c47e7a357082ff9a98480/utsi-listing-grid-international-student-guide-2026.pdf",
+-
+-    # Dates
+-    "https://www.uts.edu.au/for-students/current-students/managing-your-course/important-dates",
+-    "https://www.uts.edu.au/for-students/current-students/managing-your-course/important-dates/principal-dates",
+-    "https://www.uts.edu.au/for-students/current-students/managing-your-course/important-dates/census-date",
+-
+-    # Special consideration
+-    "https://www.uts.edu.au/for-students/current-students/managing-your-course/attendance-and-study-load/special-circumstances/special-consideration",
+-
+-    # Enrolment
+-    "https://www.uts.edu.au/current-students/managing-your-course/your-enrolment/enrolling-subjects",
+-
+-    # Exams
+-    "https://www.uts.edu.au/current-students/managing-your-course/important-dates/centrally-conducted-exams-dates-and-timetables",
+-
+-    # Timetables
+-    "https://www.uts.edu.au/for-students/current-students/managing-your-course/mytimetable",
+-
+-    # Systems and forms
+-    "https://www.uts.edu.au/for-students/current-students/managing-your-course/using-uts-systems/student-forms-apps-and-systems",
+-    "https://www.uts.edu.au/for-students/current-students/managing-your-course/using-uts-systems/student-forms-apps-and-systems/my-student-portal",
+-
+-    # Course and subject info
+-    "https://www.uts.edu.au/for-students/current-students/managing-your-course/your-enrolment/course-and-subject-information",
+-
+-    # Food, drink and retail at UTS
+-    "https://www.uts.edu.au/about/locations-facilities/campus/food-drink-retail",
+-    "https://www.yelp.com/search?cflt=cafes&find_near=uts-sydney-3"
+-    ]
+-
+-
+     TRUSTED_DOMAINS = [
+         "uts.edu.au",
++        "www.uts.edu.au",
+         "handbook.uts.edu.au",
++        "handbookpre2025.uts.edu.au",
++        "lib.uts.edu.au",
++        "profiles.uts.edu.au",
+     ]
+ 
+     OUT_OF_SCOPE = [
+@@ -100,261 +51,1366 @@ class WebRAGPipeline:
+         "non-uts organisation",
+     ]
+ 
+-    DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
++    DEBUG_DIR = os.path.join(os.path.dirname(__file__), "debug")
+ 
+-    def __init__(self, model_name="llama3:latest", max_results=5, max_chars=5000, rebuild_store=False):
+-        self.search = DuckDuckGoSearchRun()
+-        self.llm = OllamaLLM(model=model_name)
++    def __init__(self, model_name="llama3:8b", max_results=3, max_chars=2000):
++        self.model_name = model_name
+         self.max_results = max_results
+         self.max_chars = max_chars
+-        self.vector_store = self._init_vector_store(rebuild=rebuild_store)
+-
+-    # ---------------------------------------------------------
+-    # 0. LOCAL PDF VECTOR STORE
+-    # ---------------------------------------------------------
+-    def _init_vector_store(self, rebuild=False):
+-        """Load PDFs from data/ into ChromaDB (build once, then reuse)."""
+-        vs = VectorStore()
+-
+-        # If the store already exists on disk and no rebuild requested, just load it
+-        if not rebuild and os.path.exists(vs.persist_dir) and os.listdir(vs.persist_dir):
+-            vs.load()
+-            return vs
+-
+-        # Clear old store if rebuilding
+-        if rebuild and os.path.exists(vs.persist_dir):
+-            import shutil
+-            shutil.rmtree(vs.persist_dir)
+-
+-        # Otherwise, build from all PDFs in data/
+-        pdf_files = [
+-            os.path.join(self.DATA_DIR, f)
+-            for f in os.listdir(self.DATA_DIR)
+-            if f.endswith(".pdf")
+-        ]
+-        if not pdf_files:
++
++        os.makedirs(self.DEBUG_DIR, exist_ok=True)
++
++        if not self._ollama_model_available(self.model_name):
++            logger.warning(
++                "Ollama model '%s' not found locally. Install it with: ollama pull %s",
++                self.model_name,
++                self.model_name,
++            )
++
++        try:
++            self.llm = OllamaLLM(
++                model=self.model_name,
++                streaming=False,
++            )
++        except Exception:
++            logger.exception("Failed to initialise OllamaLLM")
++            self.llm = None
++
++    # ------------------------------------------------------------------
++    # Helpers
++    # ------------------------------------------------------------------
++
++    def _timestamp(self):
++        return datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
++
++    def _debug_path(self, name: str):
++        return os.path.join(self.DEBUG_DIR, f"{name}_{self._timestamp()}.log")
++
++    def _ollama_model_available(self, model_name: str) -> bool:
++        try:
++            out = subprocess.check_output(
++                ["ollama", "list"],
++                stderr=subprocess.STDOUT,
++                text=True,
++            )
++            return model_name in out
++        except Exception:
++            return False
++
++    def _save_debug_html(self, html: str):
++        try:
++            path = os.path.join(
++                self.DEBUG_DIR,
++                f"startpage_debug_{self._timestamp()}.html",
++            )
++            with open(path, "w", encoding="utf-8") as f:
++                f.write(html)
++
++            logger.info("Saved Startpage debug HTML to %s", os.path.abspath(path))
++            return os.path.abspath(path)
++
++        except Exception:
++            logger.exception("Failed to save debug HTML")
+             return None
+ 
+-        loader = DocumentLoader()
+-        docs = loader.load_multiple(pdf_files)
+-        vs.build(docs)
+-        return vs
++    def _save_debug_list(self, name: str, items):
++        try:
++            path = self._debug_path(name)
+ 
+-    def search_local_docs(self, query: str):
+-        """Search the local vector store for relevant PDF chunks."""
+-        if self.vector_store is None:
+-            return ""
+-        retriever = self.vector_store.as_retriever(k=3)
+-        results = retriever.invoke(query)
+-        if not results:
+-            return ""
+-        parts = []
+-        for doc in results:
+-            source = doc.metadata.get("source", "Community Recommendations PDF")
+-            parts.append(f"Source: {source}\n{doc.page_content}")
+-        return "\n\n---\n\n".join(parts)
++            with open(path, "w", encoding="utf-8") as f:
++                for item in items:
++                    f.write(str(item) + "\n")
++
++            logger.info("Saved debug list to %s", os.path.abspath(path))
++            return os.path.abspath(path)
++
++        except Exception:
++            logger.exception("Failed to save debug list: %s", name)
++            return None
++
++    def _is_trusted_uts_url(self, url: str) -> bool:
++        """
++        Checks the actual URL domain.
++        This prevents fake/wrapper URLs that only contain 'uts.edu.au' in the text.
++        """
++        try:
++            parsed = urlparse(url)
++            domain = parsed.netloc.lower()
++
++            if not domain:
++                return False
++
++            if domain.startswith("www."):
++                domain_no_www = domain[4:]
++            else:
++                domain_no_www = domain
++
++            for trusted in self.TRUSTED_DOMAINS:
++                trusted_clean = trusted.lower()
++
++                if trusted_clean.startswith("www."):
++                    trusted_clean = trusted_clean[4:]
++
++                if (
++                    domain == trusted.lower()
++                    or domain_no_www == trusted_clean
++                    or domain_no_www.endswith("." + trusted_clean)
++                ):
++                    return True
++
++            return False
++
++        except Exception:
++            return False
++
++    def _clean_url(self, url: str) -> str:
++        """
++        Removes fragments from URLs so duplicate links are easier to detect.
++        """
++        try:
++            parsed = urlparse(url)
++            return parsed._replace(fragment="").geturl()
++        except Exception:
++            return url
++
++    # ------------------------------------------------------------------
++    # Scope checking
++    # ------------------------------------------------------------------
+ 
+-    # ---------------------------------------------------------
+-    # SCOPE CHECK
+-    # ---------------------------------------------------------
+     def is_in_scope(self, question: str):
+         q = question.lower().strip()
+ 
+         for term in self.OUT_OF_SCOPE:
+             if term in q:
+-                return False, "Sorry, this chatbot only supports UTS ands FEIT-related questions."
++                return False, "Sorry, this chatbot only supports UTS-related questions."
+ 
+         return True, ""
+ 
+-    # ---------------------------------------------------------
+-    # 1. SEARCH
+-    # ---------------------------------------------------------
++    # ------------------------------------------------------------------
++    # Chitchat
++    # ------------------------------------------------------------------
++
++    GREETING_WORDS = {
++        "hi",
++        "hey",
++        "hello",
++        "yo",
++        "sup",
++        "hiya",
++        "g'day",
++        "howdy",
++    }
++
++    THANKS_WORDS = {
++        "thanks",
++        "thank you",
++        "cheers",
++        "ta",
++        "thx",
++        "tysm",
++        "appreciate it",
++    }
++
++    CHITCHAT_WORDS = {
++        "how are you",
++        "what's up",
++        "whats up",
++        "who are you",
++        "what can you do",
++    }
++
++    def _is_chitchat(self, question: str):
++        q = question.lower().strip().rstrip("?!.,")
++
++        if q in self.GREETING_WORDS or q in self.THANKS_WORDS:
++            return True
++
++        if any(phrase in q for phrase in self.CHITCHAT_WORDS):
++            return True
++
++        return False
++
++    def _chitchat_response(self, question: str):
++        q = question.lower().strip().rstrip("?!.,")
++
++        if q in self.THANKS_WORDS:
++            return {
++                "answer": "No worries, happy to help!",
++                "sources": [],
++            }
++
++        if "who are you" in q or "what can you do" in q:
++            return {
++                "answer": (
++                    "I'm the UTS FEIT Chatbot. I can help with UTS-related questions "
++                    "about FEIT courses, enrolment, timetables, student systems, "
++                    "campus life, food on campus, student support, internships, careers, "
++                    "clubs, the UTS Handbook, and general student life."
++                ),
++                "sources": [],
++            }
++
++        return {
++            "answer": "Hey! What can I help you with at UTS today?",
++            "sources": [],
++        }
++
++    # ------------------------------------------------------------------
++    # Fallback UTS URLs
++    # ------------------------------------------------------------------
++
++    def get_fallback_urls(self, question: str):
++        """
++        Reliable official UTS URLs for common UTS FEIT and general student questions.
++        This helps when search engines fail or when the question is broad/short.
++        """
++        q = question.lower()
++        fallback_urls = []
++
++        # ------------------------------------------------------------
++        # Always useful general hubs
++        # ------------------------------------------------------------
++        fallback_urls.extend(
++            [
++                "https://www.uts.edu.au/for-students/current-students/managing-your-course",
++                "https://www.uts.edu.au/for-students/current-students/managing-your-course/current-students-information-engineering-and-information-technology",
++            ]
++        )
++
++        # ------------------------------------------------------------
++        # FEIT / Engineering and IT specific
++        # ------------------------------------------------------------
++        if any(
++            word in q
++            for word in [
++                "feit",
++                "engineering",
++                "information technology",
++                "it student",
++                "computer science",
++                "software engineering",
++                "data engineering",
++                "cyber",
++                "cybersecurity",
++                "ai",
++                "artificial intelligence",
++                "faculty",
++                "course director",
++                "major coordinator",
++                "academic advice",
++                "academic adviser",
++                "progression",
++                "recognition of prior learning",
++                "rpl",
++                "faculty contact",
++                "faculty contacts",
++            ]
++        ):
++            fallback_urls.extend(
++                [
++                    "https://www.uts.edu.au/for-students/current-students/managing-your-course/current-students-information-engineering-and-information-technology",
++                    "https://www.uts.edu.au/for-students/current-students/managing-your-course/current-students-information-engineering-and-information-technology/faculty-contacts",
++                    "https://www.uts.edu.au/about/faculties/engineering-and-information-technology",
++                ]
++            )
++
++        # ------------------------------------------------------------
++        # Enrolment / subjects / MSA
++        # ------------------------------------------------------------
++        if any(
++            word in q
++            for word in [
++                "enrol",
++                "enroll",
++                "enrolment",
++                "enrollment",
++                "subject enrolment",
++                "enrol in subjects",
++                "enroll in subjects",
++                "msa",
++                "my student admin",
++                "student admin",
++                "web enrolment",
++                "web enrollment",
++                "study plan",
++                "course requirements",
++                "subject requirements",
++                "prerequisite",
++                "prerequisites",
++            ]
++        ):
++            fallback_urls.extend(
++                [
++                    "https://www.uts.edu.au/for-students/current-students/managing-your-course/your-enrolment/enrolling-subjects",
++                    "https://www.uts.edu.au/for-students/current-students/managing-your-course/using-uts-systems/student-forms-apps-and-systems/my-student-admin-msa",
++                    "https://www.uts.edu.au/for-students/current-students/managing-your-course/your-enrolment/course-and-subject-information",
++                    "https://www.handbook.uts.edu.au/",
++                ]
++            )
++
++        # ------------------------------------------------------------
++        # Timetable / classes
++        # ------------------------------------------------------------
++        if any(
++            word in q
++            for word in [
++                "timetable",
++                "my timetable",
++                "class allocation",
++                "allocate",
++                "classes",
++                "tutorial",
++                "lecture",
++                "lab",
++                "timetable planner",
++                "class time",
++                "class times",
++            ]
++        ):
++            fallback_urls.extend(
++                [
++                    "https://www.uts.edu.au/for-students/current-students/managing-your-course",
++                    "https://www.uts.edu.au/for-students/current-students/managing-your-course/your-enrolment/enrolling-subjects",
++                ]
++            )
++
++        # ------------------------------------------------------------
++        # Handbook / course and subject info
++        # ------------------------------------------------------------
++        if any(
++            word in q
++            for word in [
++                "handbook",
++                "subject",
++                "course",
++                "course info",
++                "subject info",
++                "course structure",
++                "credit points",
++                "major",
++                "sub-major",
++                "stream",
++                "choice block",
++            ]
++        ):
++            fallback_urls.extend(
++                [
++                    "https://www.handbook.uts.edu.au/",
++                    "https://www.uts.edu.au/for-students/current-students/managing-your-course/using-uts-systems/student-forms-apps-and-systems/uts-handbook",
++                    "https://www.uts.edu.au/for-students/current-students/managing-your-course/your-enrolment/course-and-subject-information",
++                ]
++            )
++
++        # ------------------------------------------------------------
++        # Internships / jobs / careers / CareerHub
++        # ------------------------------------------------------------
++        if any(
++            word in q
++            for word in [
++                "internship",
++                "internships",
++                "work experience",
++                "careerhub",
++                "career hub",
++                "career",
++                "careers",
++                "job",
++                "jobs",
++                "graduate role",
++                "resume",
++                "cv",
++                "interview",
++                "industry experience",
++                "work integrated learning",
++                "wil",
++            ]
++        ):
++            fallback_urls.extend(
++                [
++                    "https://www.uts.edu.au/for-students/current-students/managing-your-course/current-students-information-engineering-and-information-technology/internships",
++                    "https://www.uts.edu.au/for-students/current-students/support/opportunities/careers",
++                    "https://www.uts.edu.au/for-students/current-students/support/opportunities/careers/jobs-and-internships",
++                ]
++            )
++
++        # ------------------------------------------------------------
++        # Clubs / societies / community / student life
++        # ------------------------------------------------------------
++        if any(
++            word in q
++            for word in [
++                "club",
++                "clubs",
++                "society",
++                "societies",
++                "social",
++                "make friends",
++                "friends",
++                "community",
++                "student life",
++                "events",
++                "volunteer",
++                "volunteering",
++                "leadership",
++                "activateuts",
++                "activate uts",
++                "sport",
++                "sports",
++            ]
++        ):
++            fallback_urls.extend(
++                [
++                    "https://www.uts.edu.au/for-students/experience-uts",
++                    "https://www.uts.edu.au/for-students/experience-uts/community-leadership",
++                    "https://www.uts.edu.au/for-students/current-students/support/campus-life",
++                    "https://www.uts.edu.au/for-students/current-students/support/campus-life/your-campus/campus-life",
++                    "https://www.uts.edu.au/for-students/current-students/managing-your-course/current-students-information-engineering-and-information-technology/enhance-your-studies/clubs-and-societies",
++                ]
++            )
++
++        # ------------------------------------------------------------
++        # Food / drink / campus facilities
++        # ------------------------------------------------------------
++        if any(
++            word in q
++            for word in [
++                "food",
++                "drink",
++                "coffee",
++                "cafe",
++                "cafes",
++                "restaurant",
++                "restaurants",
++                "lunch",
++                "eat",
++                "eating",
++                "retail",
++                "shops",
++                "campus food",
++                "food court",
++                "bubble tea",
++                "bar",
++                "cheap food",
++                "vegan",
++                "vegetarian",
++            ]
++        ):
++            fallback_urls.extend(
++                [
++                    "https://www.uts.edu.au/about/locations-facilities/campus/food-drink-retail",
++                    "https://www.uts.edu.au/for-students/current-students/support/campus-life/your-campus/campus-life",
++                    "https://www.uts.edu.au/for-students/experience-uts/campus",
++                ]
++            )
++
++        # ------------------------------------------------------------
++        # Campus / buildings / maps / facilities
++        # ------------------------------------------------------------
++        if any(
++            word in q
++            for word in [
++                "campus",
++                "building",
++                "buildings",
++                "map",
++                "maps",
++                "room",
++                "rooms",
++                "facilities",
++                "study space",
++                "study spaces",
++                "where is",
++                "location",
++                "locations",
++                "uts central",
++                "building 11",
++                "library building",
++            ]
++        ):
++            fallback_urls.extend(
++                [
++                    "https://www.uts.edu.au/for-students/experience-uts/campus",
++                    "https://www.uts.edu.au/for-students/current-students/support/campus-life",
++                    "https://www.uts.edu.au/for-students/current-students/support/campus-life/your-campus/campus-life",
++                    "https://www.lib.uts.edu.au/",
++                ]
++            )
++
++        # ------------------------------------------------------------
++        # Library / referencing / research help
++        # ------------------------------------------------------------
++        if any(
++            word in q
++            for word in [
++                "library",
++                "referencing",
++                "reference",
++                "apa",
++                "harvard",
++                "database",
++                "databases",
++                "journal",
++                "journals",
++                "article",
++                "articles",
++                "book",
++                "books",
++                "study room",
++                "book a room",
++                "research",
++                "assignment help",
++            ]
++        ):
++            fallback_urls.extend(
++                [
++                    "https://www.lib.uts.edu.au/",
++                    "https://www.uts.edu.au/for-students/current-students/managing-your-course",
++                ]
++            )
++
++        # ------------------------------------------------------------
++        # Student support / AskUTS / Student Centre
++        # ------------------------------------------------------------
++        if any(
++            word in q
++            for word in [
++                "ask uts",
++                "askuts",
++                "student centre",
++                "contact",
++                "help",
++                "support",
++                "student support",
++                "erequest",
++                "e-request",
++                "special consideration",
++                "advice",
++                "student services",
++                "who do i contact",
++                "where do i ask",
++            ]
++        ):
++            fallback_urls.extend(
++                [
++                    "https://www.uts.edu.au/for-students/current-students/support/contacts",
++                    "https://www.uts.edu.au/for-students/current-students/managing-your-course/using-uts-systems/student-forms-apps-and-systems/my-student-portal",
++                    "https://www.uts.edu.au/for-students/current-students/managing-your-course",
++                ]
++            )
++
++        # ------------------------------------------------------------
++        # Orientation / getting started
++        # ------------------------------------------------------------
++        if any(
++            word in q
++            for word in [
++                "orientation",
++                "start",
++                "starting",
++                "new student",
++                "first year",
++                "getting started",
++                "student id",
++                "uts account",
++                "activate account",
++                "opela",
++                "maths readiness",
++                "mrs",
++            ]
++        ):
++            fallback_urls.extend(
++                [
++                    "https://www.uts.edu.au/for-students/current-students/managing-your-course/current-students-information-engineering-and-information-technology/getting-started/orientation",
++                    "https://www.uts.edu.au/for-students/current-students/managing-your-course",
++                    "https://www.uts.edu.au/for-students/experience-uts",
++                ]
++            )
++
++        # ------------------------------------------------------------
++        # Systems / login / Canvas / Webmail / MFA
++        # ------------------------------------------------------------
++        if any(
++            word in q
++            for word in [
++                "canvas",
++                "webmail",
++                "email",
++                "student account",
++                "uts account",
++                "mfa",
++                "multi-factor",
++                "multifactor",
++                "login",
++                "password",
++                "forgot password",
++                "vpn",
++                "software",
++                "download",
++                "student systems",
++            ]
++        ):
++            fallback_urls.extend(
++                [
++                    "https://www.uts.edu.au/for-students/current-students/managing-your-course",
++                    "https://www.uts.edu.au/for-students/current-students/managing-your-course/using-uts-systems",
++                    "https://www.uts.edu.au/for-students/current-students/managing-your-course/current-students-information-engineering-and-information-technology",
++                ]
++            )
++
++        return list(dict.fromkeys(fallback_urls))
++
++    # ------------------------------------------------------------------
++    # Startpage search
++    # ------------------------------------------------------------------
++
+     def search_web(self, query: str):
+-        """Perform DuckDuckGo search, then filter to UTS-only URLs."""
+-        raw = self.search.run(query)
+-        urls = []
+-
+-        # Extract URLs from DuckDuckGo text blob
+-        for line in raw.split("\n"):
+-            if "http" in line:
+-                url = line[line.find("http") :].strip()
+-                urls.append(url)
+-            if len(urls) >= self.max_results:
+-                break
+-
+-        # Filter to trusted UTS domains
+-        filtered = []
+-        for url in urls:
+-            if any(domain in url for domain in self.TRUSTED_DOMAINS):
+-                filtered.append(url)
+-
+-        # Add curated UTS links (ensures FEIT relevance)
+-        for trusted in self.TRUSTED_UTS_URLS:
+-            if trusted not in filtered:
+-                filtered.append(trusted)
+-
+-        return filtered[: self.max_results]
+-
+-    # ---------------------------------------------------------
+-    # 2. SCRAPE
+-    # ---------------------------------------------------------
++        """
++        Searches Startpage with UTS domain filters.
++        Returns a deduplicated list of official UTS URLs.
++        """
++        site_filter = (
++            "(site:uts.edu.au OR "
++            "site:www.uts.edu.au OR "
++            "site:handbook.uts.edu.au OR "
++            "site:handbookpre2025.uts.edu.au OR "
++            "site:lib.uts.edu.au OR "
++            "site:profiles.uts.edu.au)"
++        )
++
++        search_query = f"{query} UTS FEIT {site_filter}"
++
++        search_url = "https://www.startpage.com/sp/search"
++        params = {"query": search_query}
++
++        headers = {
++            "User-Agent": (
++                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
++                "AppleWebKit/537.36 (KHTML, like Gecko) "
++                "Chrome/120.0.0.0 Safari/537.36"
++            ),
++            "Accept-Language": "en-AU,en;q=0.9",
++        }
++
++        try:
++            response = requests.get(
++                search_url,
++                params=params,
++                headers=headers,
++                timeout=12,
++            )
++            response.raise_for_status()
++
++            html = response.text
++            soup = BeautifulSoup(html, "html.parser")
++
++            anchors = []
++
++            for a in soup.select(
++                "a.result-link, "
++                "a.w-gl__result-title, "
++                "a[data-testid='result-title-a']"
++            ):
++                href = a.get("href")
++                if href:
++                    anchors.append(href)
++
++            if not anchors:
++                for a in soup.find_all("a", href=True):
++                    anchors.append(a["href"])
++
++            self._save_debug_list("startpage_anchors", anchors or ["<no anchors>"])
++
++            extracted = []
++
++            for href in anchors:
++                if not href:
++                    continue
++
++                parsed = urlparse(href)
++                qs = parse_qs(parsed.query)
++
++                if "uddg" in qs:
++                    real_url = unquote(qs["uddg"][0])
++                    if real_url.startswith("http"):
++                        extracted.append(real_url)
++                    continue
++
++                if "url" in qs:
++                    real_url = unquote(qs["url"][0])
++                    if real_url.startswith("http"):
++                        extracted.append(real_url)
++                    continue
++
++                if href.startswith("http"):
++                    extracted.append(href)
++
++            self._save_debug_list(
++                "startpage_extracted",
++                extracted or ["<no extracted urls>"],
++            )
++
++            filtered = []
++
++            for url in extracted:
++                if not url.startswith("http"):
++                    continue
++
++                clean = self._clean_url(url)
++
++                if self._is_trusted_uts_url(clean):
++                    filtered.append(clean)
++
++            unique = list(dict.fromkeys(filtered))[:12]
++
++            if not unique:
++                logger.info("No trusted UTS URLs found for query: %s", search_query)
++                self._save_debug_html(html)
++                self._save_debug_list(
++                    "startpage_empty_extracted",
++                    extracted or ["<no extracted urls>"],
++                )
++
++            logger.info(
++                "Search query: %s | Found %d trusted UTS URLs",
++                search_query,
++                len(unique),
++            )
++
++            return unique
++
++        except Exception:
++            logger.exception("Startpage search failed for query: %s", search_query)
++            return []
++
++    # ------------------------------------------------------------------
++    # Scraping
++    # ------------------------------------------------------------------
++
+     def fetch_page(self, url: str):
+-        """Download webpage and extract readable text."""
++        """
++        Fetches and extracts readable text from an official UTS webpage.
++        """
+         try:
+-            response = requests.get(url, timeout=6)
++            if not self._is_trusted_uts_url(url):
++                logger.warning("Blocked non-UTS URL: %s", url)
++                return ""
++
++            headers = {
++                "User-Agent": (
++                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
++                    "AppleWebKit/537.36 (KHTML, like Gecko) "
++                    "Chrome/120.0.0.0 Safari/537.36"
++                ),
++                "Accept-Language": "en-AU,en;q=0.9",
++            }
++
++            response = requests.get(url, headers=headers, timeout=10)
++            response.raise_for_status()
++
+             soup = BeautifulSoup(response.text, "html.parser")
+ 
+-            # Remove scripts and styles
+-            for tag in soup(["script", "style"]):
++            for tag in soup(
++                [
++                    "script",
++                    "style",
++                    "nav",
++                    "footer",
++                    "header",
++                    "noscript",
++                    "svg",
++                    "form",
++                ]
++            ):
+                 tag.decompose()
+ 
+-            text = soup.get_text(separator=" ", strip=True)
+-            return text[: self.max_chars]
++            title = soup.title.get_text(strip=True) if soup.title else "Untitled page"
++
++            main = soup.find("main")
++            if main:
++                text = main.get_text(separator=" ", strip=True)
++            else:
++                text = soup.get_text(separator=" ", strip=True)
++
++            combined = f"Page Title: {title}\nSource URL: {url}\n{text}"
++
++            return combined[: self.max_chars]
+ 
+         except Exception:
++            logger.exception("Failed to fetch or parse page: %s", url)
+             return ""
+ 
+-    # ---------------------------------------------------------
+-    # 3. BUILD CONTEXT
+-    # ---------------------------------------------------------
++    # ------------------------------------------------------------------
++    # Ranking
++    # ------------------------------------------------------------------
++
++    def _score_page(self, question: str, text: str, url: str):
++        q = question.lower()
++        t = text.lower()
++        u = url.lower()
++
++        terms = [word for word in q.split() if len(word) > 2]
++
++        score = 0
++
++        score += sum(t.count(term) for term in terms)
++        score += sum(3 for term in terms if term in u)
++
++        # Enrolment boosts
++        if "enrol" in q or "enroll" in q:
++            if "enrolling-subjects" in u:
++                score += 30
++            if "my-student-admin" in u:
++                score += 25
++            if "course-and-subject-information" in u:
++                score += 15
++            if "handbook" in u:
++                score += 10
++
++        # Timetable boosts
++        if "timetable" in q:
++            if "my-timetable" in u:
++                score += 25
++            if "timetable-planner" in u:
++                score += 20
++            if "enrolling-subjects" in u:
++                score += 10
++
++        # Handbook / course / subject boosts
++        if any(word in q for word in ["handbook", "subject", "course", "study plan"]):
++            if "handbook" in u:
++                score += 25
++            if "course-and-subject-information" in u:
++                score += 20
++            if "managing-your-course" in u:
++                score += 8
++
++        # FEIT boosts
++        if any(
++            word in q
++            for word in [
++                "feit",
++                "engineering",
++                "information technology",
++                "computer science",
++                "software engineering",
++                "cyber",
++                "artificial intelligence",
++            ]
++        ):
++            if "engineering-and-information-technology" in u:
++                score += 30
++            if "faculty-contacts" in u:
++                score += 20
++            if "about/faculties/engineering-and-information-technology" in u:
++                score += 15
++
++        # Career / internship boosts
++        if any(
++            word in q
++            for word in [
++                "internship",
++                "career",
++                "job",
++                "careerhub",
++                "work experience",
++                "resume",
++                "interview",
++            ]
++        ):
++            if "internships" in u:
++                score += 30
++            if "careers" in u:
++                score += 25
++            if "jobs-and-internships" in u:
++                score += 25
++
++        # Student life / clubs boosts
++        if any(
++            word in q
++            for word in [
++                "club",
++                "society",
++                "student life",
++                "friends",
++                "community",
++                "events",
++                "volunteer",
++                "sport",
++            ]
++        ):
++            if "clubs-and-societies" in u:
++                score += 30
++            if "community-leadership" in u:
++                score += 25
++            if "campus-life" in u:
++                score += 20
++            if "experience-uts" in u:
++                score += 15
++
++        # Food / campus boosts
++        if any(
++            word in q
++            for word in [
++                "food",
++                "drink",
++                "coffee",
++                "cafe",
++                "lunch",
++                "eat",
++                "restaurant",
++                "vegan",
++                "vegetarian",
++            ]
++        ):
++            if "food-drink-retail" in u:
++                score += 35
++            if "campus-life" in u:
++                score += 15
++            if "experience-uts/campus" in u:
++                score += 12
++
++        # Campus / facilities boosts
++        if any(
++            word in q
++            for word in [
++                "campus",
++                "building",
++                "map",
++                "room",
++                "facilities",
++                "study space",
++                "location",
++            ]
++        ):
++            if "experience-uts/campus" in u:
++                score += 25
++            if "campus-life" in u:
++                score += 20
++            if "lib.uts.edu.au" in u:
++                score += 10
++
++        # Library boosts
++        if any(
++            word in q
++            for word in [
++                "library",
++                "referencing",
++                "database",
++                "journal",
++                "article",
++                "book a room",
++                "study room",
++            ]
++        ):
++            if "lib.uts.edu.au" in u:
++                score += 35
++
++        # Student Centre / support boosts
++        if any(
++            word in q
++            for word in [
++                "student centre",
++                "ask uts",
++                "askuts",
++                "support",
++                "contact",
++                "help",
++                "special consideration",
++                "erequest",
++            ]
++        ):
++            if "support/contacts" in u:
++                score += 30
++            if "my-student-portal" in u:
++                score += 20
++            if "managing-your-course" in u:
++                score += 8
++
++        # Orientation / getting started boosts
++        if any(
++            word in q
++            for word in [
++                "orientation",
++                "new student",
++                "first year",
++                "getting started",
++                "student id",
++                "opela",
++                "maths readiness",
++            ]
++        ):
++            if "orientation" in u:
++                score += 30
++            if "experience-uts" in u:
++                score += 15
++
++        # Systems boosts
++        if any(
++            word in q
++            for word in [
++                "canvas",
++                "webmail",
++                "email",
++                "student account",
++                "mfa",
++                "login",
++                "password",
++                "vpn",
++                "software",
++            ]
++        ):
++            if "using-uts-systems" in u:
++                score += 25
++            if "managing-your-course" in u:
++                score += 10
++            if "engineering-and-information-technology" in u:
++                score += 8
++
++        return score
++
++    def rank_pages_by_content(self, question: str, pages: dict):
++        scored = []
++
++        for url, text in pages.items():
++            if not text or not text.strip():
++                continue
++
++            score = self._score_page(question, text, url)
++            scored.append((score, url))
++
++        scored.sort(reverse=True, key=lambda item: item[0])
++
++        ranked = [url for score, url in scored if score > 0]
++
++        if not ranked:
++            ranked = [url for _, url in scored]
++
++        logger.info("Ranked %d pages", len(ranked))
++
++        return ranked
++
++    # ------------------------------------------------------------------
++    # Context
++    # ------------------------------------------------------------------
++
+     def build_context(self, pages: dict):
+-        """Combine extracted text into a structured context block."""
+-        context_parts = []
++        parts = []
+ 
+         for url, text in pages.items():
+-            if text.strip():
+-                context_parts.append(
++            if text and text.strip():
++                parts.append(
+                     f"Source URL: {url}\n"
+                     f"Extracted Content:\n{text}\n"
+                 )
+ 
+-        return "\n\n---\n\n".join(context_parts)
++        return "\n\n---\n\n".join(parts)
++
++    # ------------------------------------------------------------------
++    # Active tab handling
++    # ------------------------------------------------------------------
++
++    def get_active_tab_context(self, edge_tabs_metadata):
++        """
++        Optional support for Edge active tab metadata.
++        If the active tab is an official UTS page, it is fetched and used as high-priority context.
++        """
++        try:
++            if not edge_tabs_metadata or not isinstance(edge_tabs_metadata, list):
++                return ""
++
++            current_tab = None
++
++            for tab in edge_tabs_metadata:
++                is_current = (
++                    tab.get("isCurrent")
++                    or tab.get("is_current")
++                    or tab.get("iscurrent")
++                )
++
++                if is_current is True:
++                    current_tab = tab
++                    break
++
++            if not current_tab:
++                current_tab = edge_tabs_metadata[0]
++
++            page_url = (
++                current_tab.get("pageUrl")
++                or current_tab.get("page_url")
++                or current_tab.get("pageURL")
++                or ""
++            )
++
++            page_title = (
++                current_tab.get("pageTitle")
++                or current_tab.get("page_title")
++                or ""
++            )
++
++            if not page_url or not isinstance(page_url, str):
++                return ""
++
++            if page_url.startswith("<") and page_url.endswith(">"):
++                return ""
++
++            if page_url.startswith("http") and self._is_trusted_uts_url(page_url):
++                logger.info("Fetching active UTS tab: %s", page_url)
++
++                snippet = self.fetch_page(page_url)
++
++                if snippet:
++                    return (
++                        "=== Active Browser Tab: Official UTS Page ===\n"
++                        f"Source URL: {page_url}\n"
++                        f"Title: {page_title}\n"
++                        f"Extracted Content:\n{snippet}"
++                    )
++
++            return ""
++
++        except Exception:
++            logger.exception("Error processing active tab metadata")
++            return ""
++
++    # ------------------------------------------------------------------
++    # LLM
++    # ------------------------------------------------------------------
+ 
+-    # ---------------------------------------------------------
+-    # 4. LLM SYNTHESIS
+-    # ---------------------------------------------------------
+     def generate_answer(self, question: str, context: str):
+-        """Ask the LLM to answer using ONLY UTS sources."""
+-        prompt = f"""You are a friendly, helpful assistant for students at UTS Faculty of Engineering and IT (FEIT). Think of yourself as a knowledgeable peer mentor.
+-
+-PERSONALITY & TONE:
+-- Warm, approachable, and concise — like a helpful senior student
+-- Use casual but professional language
+-- Keep responses short and scannable — no walls of text
+-
+-GREETING & CHITCHAT HANDLING:
+-- If the student says hello, hi, hey, thanks, or makes casual conversation, respond naturally and warmly. Do NOT search for sources or say you couldn't find information.
+-- Example: "Hey! 👋 How can I help you today?" or "No worries, happy to help!"
+-- If they ask who you are, say you're the UTS FEIT Chatbot — here to help with anything about uni life, courses, and campus.
+-
+-ANSWERING QUESTIONS:
+-- ONLY use information from the context block below. Do NOT make up information.
+-- If the answer isn't in the context, say: "I couldn't find that in my sources — try checking [Ask UTS](https://www.uts.edu.au/for-students/current-students/managing-your-course/ask-uts) or contacting FEIT directly."
+-- Answer ONLY what was asked. Don't over-explain or add unrelated info.
+-
+-FORMATTING RULES:
+-- Use bullet points or numbered steps — never long paragraphs
+-- Bold key terms or actions the student needs to take
+-- Keep answers to 3-5 bullet points max where possible
+-- Use headings only if answering multiple parts
+-
+-CITATIONS (STRICT RULES):
+-- You MUST include numbered references like [1], [2], [3].
+-- You MUST cite ONLY from the URLs in the context block.
+-- You MUST output **no more than 3 references total**.
+-- If more than 3 sources appear in the context, choose the 3 most relevant.
+-- NEVER output more than 3 links under any circumstances.
+-
+-When a user greets you with no question, respond with a friendly greeting and an invitation to ask about UTS FEIT with a couple suggestions on what to ask
+-
+-your writing style is clear, concise, and student-friendly. Always cite the source URLs in your answer.
+-
+----------------- CONTEXT START ----------------
++        """
++        Sends the final context to the LLM.
++        Uses shorter prompt/context to reduce Ollama crashes.
++        Includes retry logic with an even shorter context.
++        """
++        if not context or not context.strip():
++            return (
++                "Sorry, I could not find enough information from official UTS webpages. "
++                "Try asking with a more specific UTS keyword, such as 'subject enrolment', "
++                "'My Student Admin', 'timetable', 'UTS Handbook', 'food on campus', "
++                "'internships', or a subject code."
++            )
++
++        MAX_CONTEXT_CHARS = 5000
++
++        if len(context) > MAX_CONTEXT_CHARS:
++            logger.warning(
++                "Context too large (%d chars). Truncating to %d.",
++                len(context),
++                MAX_CONTEXT_CHARS,
++            )
++            context = context[:MAX_CONTEXT_CHARS]
++
++        prompt = f"""
++You are a friendly UTS FEIT student support chatbot.
++
++Answer using ONLY the official UTS webpage context below.
++
++Rules:
++- Do not use general knowledge.
++- Do not invent UTS rules, dates, fees, deadlines, subject requirements, or contact details.
++- If the context does not contain enough information, say:
++  "Sorry, I could not find enough information from official UTS webpages."
++- Do NOT include a sources section. The application displays sources separately.
++- If the student asks "how", give clear numbered steps.
++- For enrolment questions, prioritise practical actions such as logging in to My Student Admin, using web enrolment, selecting subjects, checking course requirements, and then organising timetable activities, but only if these are supported by the context.
++- Keep the answer clear and student-friendly.
++
++Official UTS webpage context:
+ {context}
+----------------- CONTEXT END ------------------
+ 
+-Student's question: {question}
++Student question:
++{question}
++
++Answer:
+ """
+-        return self.llm.invoke(prompt)
+ 
+-    # ---------------------------------------------------------
+-    # 5. GREETING / CHITCHAT DETECTION
+-    # ---------------------------------------------------------
+-    GREETING_WORDS = {"hi", "hey", "hello", "yo", "sup", "hiya", "g'day", "howdy"}
+-    THANKS_WORDS = {"thanks", "thank you", "cheers", "ta", "thx", "tysm", "appreciate it"}
+-    CHITCHAT_WORDS = {"how are you", "what's up", "whats up", "who are you", "what can you do"}
++        MAX_PROMPT_CHARS = 7000
+ 
+-    def _is_chitchat(self, question: str):
+-        """Check if the message is a greeting or chitchat, not a real question."""
+-        q = question.lower().strip().rstrip("?!.,")
+-        if q in self.GREETING_WORDS or q in self.THANKS_WORDS:
+-            return True
+-        if any(phrase in q for phrase in self.CHITCHAT_WORDS):
+-            return True
+-        # Very short messages with no real question words
+-        if len(q.split()) <= 2 and q in self.GREETING_WORDS | self.THANKS_WORDS:
+-            return True
+-        return False
++        if len(prompt) > MAX_PROMPT_CHARS:
++            logger.warning(
++                "Prompt too long: %d chars. Truncating to %d.",
++                len(prompt),
++                MAX_PROMPT_CHARS,
++            )
++            prompt = prompt[:MAX_PROMPT_CHARS]
+ 
+-    def _chitchat_response(self, question: str):
+-        """Return a friendly response for greetings and chitchat."""
+-        q = question.lower().strip().rstrip("?!.,")
+-        if q in self.THANKS_WORDS:
+-            return {"answer": "No worries, happy to help! Let me know if you have any other questions 😊", "sources": []}
+-        if any(phrase in q for phrase in {"who are you", "what can you do"}):
++        if self.llm is None:
++            return (
++                "Sorry, the language model is not available right now. "
++                "Please check that Ollama is running and the model is installed."
++            )
++
++        try:
++            result = self.llm.invoke(prompt)
++
++            if isinstance(result, dict) and "text" in result:
++                return result["text"]
++
++            return str(result)
++
++        except Exception:
++            logger.exception("Primary LLM invocation failed. Retrying with shorter context.")
++
++            short_context = context[:2000]
++
++            fallback_prompt = f"""
++You are a UTS FEIT student support chatbot.
++
++Use ONLY the short official UTS context below.
++If the context is not enough, say you could not find enough information from official UTS webpages.
++Do NOT include source URLs. The application displays sources separately.
++If the question asks "how", give simple numbered steps.
++
++Context:
++{short_context}
++
++Question:
++{question}
++
++Answer:
++"""
++
++            try:
++                result = self.llm.invoke(fallback_prompt)
++
++                if isinstance(result, dict) and "text" in result:
++                    return result["text"]
++
++                return str(result)
++
++            except Exception:
++                logger.exception("Fallback LLM invocation also failed")
++                return (
++                    "Sorry — I found relevant official UTS webpages, but the local language model "
++                    "is currently unavailable. Please try again after restarting Ollama."
++                )
++
++    # ------------------------------------------------------------------
++    # Full pipeline
++    # ------------------------------------------------------------------
++
++    def run(self, question: str, edge_tabs_metadata=None):
++        """
++        Runs the full UTS webpage-only RAG pipeline.
++        """
++        in_scope, msg = self.is_in_scope(question)
++
++        if not in_scope:
+             return {
+-                "answer": "I'm the **UTS FEIT Chatbot** — I can help you with:\n"
+-                          "- Course info, enrolment & timetables\n"
+-                          "- Uni policies & important dates\n"
+-                          "- Campus life tips (cafes, hangout spots, etc.)\n\n"
+-                          "Just ask away!",
+-                "sources": []
++                "answer": msg,
++                "sources": [],
+             }
+-        return {"answer": "Hey! 👋 I'm the UTS FEIT Chatbot. What can I help you with today?", "sources": []}
+-
+-    # ---------------------------------------------------------
+-    # 6. FULL PIPELINE
+-    # ---------------------------------------------------------
+-    def run(self, question: str):
+-        """Full UTS‑restricted Web‑RAG pipeline."""
+-        in_scope, message = self.is_in_scope(question)
+-        if not in_scope:
+-            return {"answer": message, "sources": []}
+ 
+-        # Handle greetings and chitchat without searching
+         if self._is_chitchat(question):
+             return self._chitchat_response(question)
+ 
+-        # Web sources
+-        urls = self.search_web(question)
++        # 1. Search web
++        search_urls = self.search_web(question)
++
++        # 2. Add official UTS fallback URLs for broad/common questions
++        fallback_urls = self.get_fallback_urls(question)
+ 
+-        # LIMIT URLS BEFORE SCRAPING (prevents LLM crashes)
+-        limited_urls = urls[:3]
++        # 3. Combine and deduplicate
++        candidate_urls = list(dict.fromkeys(search_urls + fallback_urls))
+ 
+-        # Scrape only the limited URLs
+-        pages = {url: self.fetch_page(url) for url in limited_urls}
+-        web_context = self.build_context(pages)
++        logger.info(
++            "Total candidate UTS URLs after fallback: %d",
++            len(candidate_urls),
++        )
+ 
+-        # Local PDF sources
+-        local_context = self.search_local_docs(question)
++        # 4. Optional active tab context
++        active_tab_context = ""
++
++        if edge_tabs_metadata:
++            try:
++                active_tab_context = self.get_active_tab_context(edge_tabs_metadata)
++            except Exception:
++                logger.exception("Failed to process active tab context")
++
++        # 5. Fetch candidate pages
++        pages = {}
++
++        for url in candidate_urls:
++            text = self.fetch_page(url)
++
++            if text and text.strip():
++                pages[url] = text
++
++        # 6. Rank pages
++        ranked_urls = self.rank_pages_by_content(question, pages)
++
++        # 7. Keep top N official webpages
++        limited_urls = ranked_urls[: self.max_results]
++
++        limited_pages = {
++            url: pages[url]
++            for url in limited_urls
++            if url in pages and pages[url].strip()
++        }
++
++        # 8. Build official web context
++        web_context = self.build_context(limited_pages)
+ 
+-        # Combine both contexts
+         context_parts = []
+-        if local_context:
+-            context_parts.append("=== Community Recommendations ===\n" + local_context)
++
++        if active_tab_context:
++            context_parts.append(active_tab_context)
++
+         if web_context:
+-            context_parts.append("=== UTS Web Sources ===\n" + web_context)
+-        context = "\n\n".join(context_parts)
++            context_parts.append("=== Official UTS Web Sources ===\n" + web_context)
++
++        context = "\n\n".join(context_parts).strip()
++
++        # 9. If there is no official UTS webpage context, refuse instead of guessing
++        if not context:
++            return {
++                "answer": (
++                    "Sorry, I could not find enough information from official UTS webpages. "
++                    "Try asking with a more specific UTS keyword, such as 'subject enrolment', "
++                    "'My Student Admin', 'timetable', 'UTS Handbook', 'food on campus', "
++                    "'internships', or a subject code."
++                ),
++                "sources": [],
++            }
+ 
+-        # Generate answer
++        # 10. Generate answer
+         answer = self.generate_answer(question, context)
+ 
+-        # Sources list (also limited)
+         sources = limited_urls.copy()
+-        if local_context:
+-            sources.append("Community Recommendations PDF")
++
++        if active_tab_context:
++            sources.insert(0, "Active Browser Tab: Official UTS Page")
+ 
+         return {
+             "answer": answer,
+-            "sources": sources
+-        }
+\ No newline at end of file
++            "sources": sources,
++        }
++
++
++# ----------------------------------------------------------------------
++# Optional quick test
++# ----------------------------------------------------------------------
++
++if __name__ == "__main__":
++    rag = WebRAGPipeline(model_name="llama3:8b")
++
++    test_questions = [
++        "How do I enrol in subjects?",
++        "Where can I get food on campus?",
++        "Where can FEIT students find internships?",
++        "Who do I contact for academic advice in FEIT?",
++    ]
++
++    for test_question in test_questions:
++        result = rag.run(test_question)
++
++        print("\n" + "=" * 80)
++        print("QUESTION:")
++        print(test_question)
++
++        print("\nANSWER:")
++        print(result["answer"])
++
++        print("\nSOURCES:")
++        for source in result["sources"]:
++            print("-", source)
+\ No newline at end of file
+-- 
+2.53.0
+
