@@ -93,12 +93,8 @@ class WebRAGPipeline:
         "unsw",
         "university of new south wales",
         "macquarie university",
-        "anu",
         "australian national university",
         "monash university",
-        "other university",
-        "other organisation",
-        "non-uts organisation",
     ]
 
     DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
@@ -163,7 +159,7 @@ class WebRAGPipeline:
 
         for term in self.OUT_OF_SCOPE:
             if term in q:
-                return False, "Sorry, this chatbot only supports UTS ands FEIT-related questions."
+                return False, "Sorry, this chatbot only supports UTS and FEIT-related questions."
 
         return True, ""
 
@@ -337,7 +333,7 @@ IN-SCOPE CHECK:
 - Only answer questions that are in scope
 - In scope = anything related to UTS or FEIT courses, enrolment, timetables, policies, campus life, important dates, even transport.
 - If the question seems to be about another topic outside of UTS or FEIT, politely decline and suggest the student ask a more relevant question.
-- Unless the messae is a greeting or chitchat, ALWAYS perform the in-scope check first before attempting to search or answer.
+- Unless the message is a greeting or chitchat, ALWAYS perform the in-scope check first before attempting to search or answer.
 - If a question is out of scope, do not include any reference links. 
 
 OUT-OF-SCOPE CHECK: 

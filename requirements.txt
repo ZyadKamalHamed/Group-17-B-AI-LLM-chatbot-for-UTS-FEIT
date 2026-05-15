@@ -7,9 +7,6 @@ langchain-ollama
 # Vector store
 chromadb
 
-# Embeddings
-sentence-transformers
-
 # Document loaders & scraping
 pypdf
 python-docx

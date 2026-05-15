@@ -19,9 +19,6 @@ class VectorStore:
         )
         return self.store
 
-    def save(self):
-        pass
-
     def load(self):
         self.store = Chroma(
             embedding_function=self.embeddings,

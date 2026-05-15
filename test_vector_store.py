@@ -6,4 +6,3 @@ docs = loader.load_webpage("https://www.uts.edu.au/about/faculty-engineering-and
 
 vs = VectorStore(model_name="nomic-embed-text")
 vs.build(docs)
-vs.save()

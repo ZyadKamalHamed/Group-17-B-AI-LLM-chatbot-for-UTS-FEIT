@@ -33,7 +33,6 @@ def install_packages():
         subprocess.check_call([sys.executable, "-m", "pip", "install", package])
 
 
-install_packages()
 
 
 import requests

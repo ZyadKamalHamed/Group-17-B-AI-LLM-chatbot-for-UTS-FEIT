@@ -1,8 +1,10 @@
-'.env'
-'.venv-1'
+.env
+.venv-1
 .venv
 .DS_Store
 .idea
 __pycache__/
 *.pyc
+*.patch
 Assignment-PDFs
+chroma_db/
